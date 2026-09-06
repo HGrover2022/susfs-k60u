@@ -31,7 +31,7 @@ jobs:
           remove-codeql: 'true'
 
       - name: Checkout KernelSU-Next (next-susfs)
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
         with:
           repository: pershoot/KernelSU-Next
           ref: next-susfs
