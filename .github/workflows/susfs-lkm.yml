@@ -2,10 +2,6 @@ name: SUSFS LKM Build (android13-5.15 / KMI 8)
 
 # 一键编译带 SUSFS 的 kernelsu.ko + 内核镜像 Image
 # 适用设备：Redmi 23078RKD5C (corot) / 内核 5.15.78-android13-8 (KMI 8)
-# 基于 pershoot gki-kernel.yml 改造：
-#   - 内核源码锁定 KMI 8 tag: android13-5.15-2023-06 (deprecated 自动处理)
-#   - KernelSU-Next 使用 pershoot next-susfs 分支（自带 SUSFS 模块侧集成）
-#   - 追加 SUSFS 内核补丁(50_add_susfs) + 3 个源文件 + KMI 8 修复脚本
 
 on:
   workflow_dispatch:
@@ -142,124 +138,94 @@ jobs:
           curl -L -o include/linux/susfs_def.h https://gitlab.com/simonpunk/susfs4ksu/-/raw/gki-android13-5.15/kernel_patches/include/linux/susfs_def.h
           echo "[+] Applying KMI 8 manual fixes"
           cat > /tmp/fix_susfs_kmi8.py <<'PYEOF'
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-fix_susfs_kmi8.py
-修复 SUSFS 50_add_susfs patch 在 KMI 8 (android13-5.15-2023-06, 5.15.78) 上
-无法干净应用(被 git apply --reject 拒绝)的 3 个 hunk。
+          import io
+          import sys
 
-差异根因：5.15.189 (SUSFS 目标) 相比 5.15.78 引入了以下代码：
-  1. kernel/sys.c  __sys_setresuid 中的 "bool ruid_new, euid_new, suid_new;"
-  2. fs/proc/task_mmu.c  show_smap 中的 "if (!vma_pages(vma))"
-  3. fs/namei.c  新函数 lookup_one_qstr_excl (5.15.78 对应函数为 __lookup_hash)
+          def patch_file(path, old, new, tag):
+              with io.open(path, encoding='utf-8') as f:
+                  s = f.read()
+              n = s.count(old)
+              if n != 1:
+                  sys.stderr.write("[FAIL] %s: anchor found %d times (expected 1)\n" % (tag, n))
+                  sys.exit(1)
+              s = s.replace(old, new)
+              with io.open(path, 'w', encoding='utf-8', newline='\n') as f:
+                  f.write(s)
+              sys.stdout.write("[OK] %s\n" % tag)
 
-用法：在 common/ 内核源码根目录执行: python3 fix_susfs_kmi8.py
-前置条件：50_add_susfs patch 已通过 `git apply --reject` 应用，
-         且所有 *.rej 文件尚未删除。
-"""
+          patch_file(
+              'kernel/sys.c',
+              "\tkuid_t kruid, keuid, ksuid;\n\n\tkruid = make_kuid(ns, ruid);",
+              "\tkuid_t kruid, keuid, ksuid;\n\n"
+              "#ifdef CONFIG_KSU_SUSFS\n"
+              "\t(void)ksu_handle_setresuid(ruid, euid, suid);\n"
+              "#endif\n\n"
+              "\tkruid = make_kuid(ns, ruid);",
+              'kernel/sys.c  (ksu_handle_setresuid)')
 
-import io
-import sys
+          patch_file(
+              'fs/proc/task_mmu.c',
+              "static int show_smap(struct seq_file *m, void *v)\n"
+              "{\n"
+              "\tstruct vm_area_struct *vma = v;\n"
+              "\tstruct mem_size_stats mss;\n\n"
+              "\tmemset(&mss, 0, sizeof(mss));",
+              "static int show_smap(struct seq_file *m, void *v)\n"
+              "{\n"
+              "\tstruct vm_area_struct *vma = v;\n"
+              "\tstruct mem_size_stats mss;\n\n"
+              "#ifdef CONFIG_KSU_SUSFS_SUS_MAP\n"
+              "\tif (vma->vm_file) {\n"
+              "\t\tif (SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))\n"
+              "\t\t\treturn 0;\n"
+              "\t}\n"
+              "#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP\n\n"
+              "\tmemset(&mss, 0, sizeof(mss));",
+              'fs/proc/task_mmu.c (show_smap SUS_MAP)')
 
-def patch_file(path, old, new, tag):
-    with io.open(path, encoding='utf-8') as f:
-        s = f.read()
-    n = s.count(old)
-    if n != 1:
-        sys.stderr.write("[FAIL] %s: anchor found %d times (expected 1)\n" % (tag, n))
-        sys.exit(1)
-    s = s.replace(old, new)
-    with io.open(path, 'w', encoding='utf-8', newline='\n') as f:
-        f.write(s)
-    sys.stdout.write("[OK] %s\n" % tag)
+          patch_file(
+              'fs/namei.c',
+              "\tdentry = d_alloc(base, name);\n"
+              "#ifdef CONFIG_KSU_SUSFS_SUS_PATH\n"
+              "retry:\n"
+              "#endif\n"
+              "\tif (unlikely(!dentry))\n"
+              "\t\treturn ERR_PTR(-ENOMEM);\n\n"
+              "\told = dir->i_op->lookup(dir, dentry, flags);\n"
+              "\tif (unlikely(old)) {\n"
+              "\t\tdput(dentry);\n"
+              "\t\tdentry = old;\n"
+              "\t}\n"
+              "\treturn dentry;\n"
+              "}",
+              "\tdentry = d_alloc(base, name);\n"
+              "#ifdef CONFIG_KSU_SUSFS_SUS_PATH\n"
+              "retry:\n"
+              "#endif\n"
+              "\tif (unlikely(!dentry))\n"
+              "\t\treturn ERR_PTR(-ENOMEM);\n\n"
+              "\told = dir->i_op->lookup(dir, dentry, flags);\n"
+              "\tif (unlikely(old)) {\n"
+              "\t\tdput(dentry);\n"
+              "\t\tdentry = old;\n"
+              "\t}\n"
+              "#ifdef CONFIG_KSU_SUSFS_SUS_PATH\n"
+              "\tif (unlikely(dentry) && !IS_ERR(dentry) && dentry->d_inode && !found_sus_path && susfs_is_inode_sus_path(dentry->d_inode)) {\n"
+              "\t\tif (d_in_lookup(dentry))\n"
+              "\t\t\td_lookup_done(dentry);\n"
+              "\t\tif (!(flags & LOOKUP_RCU))\n"
+              "\t\t\tdput(dentry);\n"
+              "\t\tdentry = d_alloc(base, &susfs_fake_qstr_name);\n"
+              "\t\tfound_sus_path = true;\n"
+              "\t\tgoto retry;\n"
+              "\t}\n"
+              "#endif\n"
+              "\treturn dentry;\n"
+              "}",
+              'fs/namei.c (__lookup_hash SUS_PATH)')
 
-# ------------------------------------------------------------------
-# 1) kernel/sys.c : __sys_setresuid 插入 ksu_handle_setresuid 调用
-#    原 hunk 上下文含 "bool ruid_new, euid_new, suid_new;" (5.15.78 没有)
-# ------------------------------------------------------------------
-patch_file(
-    'kernel/sys.c',
-    "\tkuid_t kruid, keuid, ksuid;\n\n\tkruid = make_kuid(ns, ruid);",
-    "\tkuid_t kruid, keuid, ksuid;\n\n"
-    "#ifdef CONFIG_KSU_SUSFS\n"
-    "\t(void)ksu_handle_setresuid(ruid, euid, suid);\n"
-    "#endif\n\n"
-    "\tkruid = make_kuid(ns, ruid);",
-    'kernel/sys.c  (ksu_handle_setresuid)')
-
-# ------------------------------------------------------------------
-# 2) fs/proc/task_mmu.c : show_smap 开头插入 SUS_MAP 隐藏检查
-#    原 hunk 上下文含 "if (!vma_pages(vma))" (5.15.78 没有)
-# ------------------------------------------------------------------
-patch_file(
-    'fs/proc/task_mmu.c',
-    "static int show_smap(struct seq_file *m, void *v)\n"
-    "{\n"
-    "\tstruct vm_area_struct *vma = v;\n"
-    "\tstruct mem_size_stats mss;\n\n"
-    "\tmemset(&mss, 0, sizeof(mss));",
-    "static int show_smap(struct seq_file *m, void *v)\n"
-    "{\n"
-    "\tstruct vm_area_struct *vma = v;\n"
-    "\tstruct mem_size_stats mss;\n\n"
-    "#ifdef CONFIG_KSU_SUSFS_SUS_MAP\n"
-    "\tif (vma->vm_file) {\n"
-    "\t\tif (SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))\n"
-    "\t\t\treturn 0;\n"
-    "\t}\n"
-    "#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP\n\n"
-    "\tmemset(&mss, 0, sizeof(mss));",
-    'fs/proc/task_mmu.c (show_smap SUS_MAP)')
-
-# ------------------------------------------------------------------
-# 3) fs/namei.c : __lookup_hash 尾部插入 SUS_PATH 检查
-#    (5.15.78 中 lookup_one_qstr_excl 不存在, 对应函数为 __lookup_hash;
-#      前 4 个 hunk 已自动落到 __lookup_hash, 此处补尾块)
-# ------------------------------------------------------------------
-patch_file(
-    'fs/namei.c',
-    "\tdentry = d_alloc(base, name);\n"
-    "#ifdef CONFIG_KSU_SUSFS_SUS_PATH\n"
-    "retry:\n"
-    "#endif\n"
-    "\tif (unlikely(!dentry))\n"
-    "\t\treturn ERR_PTR(-ENOMEM);\n\n"
-    "\told = dir->i_op->lookup(dir, dentry, flags);\n"
-    "\tif (unlikely(old)) {\n"
-    "\t\tdput(dentry);\n"
-    "\t\tdentry = old;\n"
-    "\t}\n"
-    "\treturn dentry;\n"
-    "}",
-    "\tdentry = d_alloc(base, name);\n"
-    "#ifdef CONFIG_KSU_SUSFS_SUS_PATH\n"
-    "retry:\n"
-    "#endif\n"
-    "\tif (unlikely(!dentry))\n"
-    "\t\treturn ERR_PTR(-ENOMEM);\n\n"
-    "\told = dir->i_op->lookup(dir, dentry, flags);\n"
-    "\tif (unlikely(old)) {\n"
-    "\t\tdput(dentry);\n"
-    "\t\tdentry = old;\n"
-    "\t}\n"
-    "#ifdef CONFIG_KSU_SUSFS_SUS_PATH\n"
-    "\tif (unlikely(dentry) && !IS_ERR(dentry) && dentry->d_inode && !found_sus_path && susfs_is_inode_sus_path(dentry->d_inode)) {\n"
-    "\t\tif (d_in_lookup(dentry))\n"
-    "\t\t\td_lookup_done(dentry);\n"
-    "\t\tif (!(flags & LOOKUP_RCU))\n"
-    "\t\t\tdput(dentry);\n"
-    "\t\tdentry = d_alloc(base, &susfs_fake_qstr_name);\n"
-    "\t\tfound_sus_path = true;\n"
-    "\t\tgoto retry;\n"
-    "\t}\n"
-    "#endif\n"
-    "\treturn dentry;\n"
-    "}",
-    'fs/namei.c (__lookup_hash SUS_PATH)')
-
-sys.stdout.write("All fixes applied.\n")
-PYEOF
+          sys.stdout.write("All fixes applied.\n")
+          PYEOF
           python3 /tmp/fix_susfs_kmi8.py
           echo "[+] Removing .rej leftovers"
           find . -name '*.rej' -delete
