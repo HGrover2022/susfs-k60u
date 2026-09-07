@@ -9,7 +9,9 @@ on:
 jobs:
   build:
     name: Build kernelsu + SUSFS (android13-5.15-2023-06)
-    runs-on: ubuntu-latest
+    # Ubuntu 24.04 (glibc 2.38+) redirects strtol/strtoul/strtoull to __isoc23_*,
+    # breaking resolve_btfids link with Android 13 clang-14. Pin to 22.04 (glibc 2.35).
+    runs-on: ubuntu-22.04
     env:
       CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
       CCACHE_NOHASHDIR: "true"
@@ -67,13 +69,15 @@ jobs:
           grep -q "kernelsu" "$DRIVER_MAKEFILE" || printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> "$DRIVER_MAKEFILE"
           grep -q "kernelsu" "$DRIVER_KCONFIG" || sed -i "/endmenu/i\\source \"drivers/kernelsu/Kconfig\"" "$DRIVER_KCONFIG"
           echo "[+] Apply Compilation Patches"
-          if [ ! -e build/build.sh ]; then
-            GLIBC_VERSION=$(ldd --version 2>/dev/null | head -n 1 | awk '{print $NF}')
-            echo "GLIBC_VERSION: $GLIBC_VERSION"
-            if [ "$(printf '%s\n' "2.38" "$GLIBC_VERSION" | sort -V | head -n1)" = "2.38" ]; then
-              echo "Patching resolve_btfids/Makefile"
-              cd $GKI_ROOT/common/ && sed -i '/\$(Q)\$(MAKE) -C \$(SUBCMD_SRC) OUTPUT=\$(abspath \$(dir \$@))\/ \$(abspath \$@)/s//$(Q)$(MAKE) -C $(SUBCMD_SRC) EXTRA_CFLAGS="$(CFLAGS)" OUTPUT=$(abspath $(dir $@))\/ $(abspath $@)/' tools/bpf/resolve_btfids/Makefile || echo "No patch needed."
-            fi
+          # Fix host toolchain: glibc >= 2.38 (Ubuntu 24.04) redirects strtol/strtoul/strtoull
+          # to __isoc23_* symbols, which Android 13's clang-14 cannot resolve when linking
+          # the resolve_btfids host tool -> "ld.lld: undefined symbol: __isoc23_strtol".
+          # Must run unconditionally (android13-5.15 always builds via build/build.sh).
+          GLIBC_VERSION=$(ldd --version 2>/dev/null | head -n 1 | awk '{print $NF}')
+          echo "GLIBC_VERSION: $GLIBC_VERSION"
+          if [ "$(printf '%s\n' "2.38" "$GLIBC_VERSION" | sort -V | head -n1)" = "2.38" ]; then
+            echo "Patching resolve_btfids/Makefile"
+            cd $GKI_ROOT/common/ && sed -i '/\$(Q)\$(MAKE) -C \$(SUBCMD_SRC) OUTPUT=\$(abspath \$(dir \$@))\/ \$(abspath \$@)/s//$(Q)$(MAKE) -C $(SUBCMD_SRC) EXTRA_CFLAGS="$(CFLAGS)" OUTPUT=$(abspath $(dir $@))\/ $(abspath $@)/' tools/bpf/resolve_btfids/Makefile || echo "No patch needed."
           fi
           repo status
           echo "[+] KernelSU-Next setup done."
