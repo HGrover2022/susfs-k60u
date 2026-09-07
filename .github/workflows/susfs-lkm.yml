@@ -187,6 +187,23 @@ jobs:
               "\tmemset(&mss, 0, sizeof(mss));",
               'fs/proc/task_mmu.c (show_smap SUS_MAP)')
 
+          # Fix official susfs4ksu bug: gki-android13-5.15 patch calls VMA_PAD_START()
+          # in show_map_vma() but never defines it (upstream added it in a later
+          # commit and it depends on vma_pad_pages(), which only exists on kernel 6.1+).
+          # On 5.15 there is no VMA padding, so vma_pad_pages() == 0 and
+          # VMA_PAD_START(vma) == vma->vm_end (matches upstream commit ecf0f82).
+          patch_file(
+              'fs/proc/task_mmu.c',
+              "\t\t\tend = VMA_PAD_START(vma);",
+              "\t\t\t#ifndef vma_pad_pages\n"
+              "\t\t\t#define vma_pad_pages(vma) 0\n"
+              "\t\t\t#endif\n"
+              "\t\t\t#ifndef VMA_PAD_START\n"
+              "\t\t\t#define VMA_PAD_START(vma) (vma->vm_end - (vma_pad_pages(vma) << PAGE_SHIFT))\n"
+              "\t\t\t#endif\n"
+              "\t\t\tend = VMA_PAD_START(vma);",
+              'fs/proc/task_mmu.c (define VMA_PAD_START for 5.15)')
+
           patch_file(
               'fs/namei.c',
               "\tdentry = d_alloc(base, name);\n"
