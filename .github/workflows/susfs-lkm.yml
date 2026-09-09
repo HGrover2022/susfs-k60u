@@ -310,6 +310,7 @@ jobs:
           patch_file(
               'fs/namei.c',
               '\tconst char *res;\n'
+              '\n'
               '\tnd->flags |= op->intent;',
               '\tconst char *res;\n'
               '#ifdef CONFIG_KSU_SUSFS_SUS_PATH\n'
@@ -350,13 +351,13 @@ jobs:
               '\t}\n'
               '#endif\n')
           apply_in('fs/readdir.c', 'static int fillonedir(struct dir_context *ctx',
-                   '\tbuff->result++;', filter_c, '', 'readdir fillonedir')
+                   '\tbuf->result++;', filter_c, '', 'readdir fillonedir')
           apply_in('fs/readdir.c', 'static int filldir(struct dir_context *ctx',
                    '\tdirent = buf->current_dir;', filter_c, '', 'readdir filldir')
           apply_in('fs/readdir.c', 'static int filldir64(struct dir_context *ctx',
                    '\tdirent = buf->current_dir;', filter_c, '', 'readdir filldir64')
           apply_in('fs/readdir.c', 'static int compat_fillonedir(struct dir_context *ctx',
-                   '\tbuff->result++;', filter_c, '', 'readdir compat_fillonedir')
+                   '\tbuf->result++;', filter_c, '', 'readdir compat_fillonedir')
           apply_in('fs/readdir.c', 'static int compat_filldir(struct dir_context *ctx',
                    '\tdirent = buf->current_dir;', filter_c, '', 'readdir compat_filldir')
 
