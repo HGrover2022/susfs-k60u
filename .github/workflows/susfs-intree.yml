@@ -184,6 +184,9 @@ jobs:
           #ifndef BIT_SUS_MAPS
           #define BIT_SUS_MAPS BIT(AS_FLAGS_SUS_MAP)
           #endif
+          #ifndef ND_STATE_LAST_SDCARD_SUS_PATH
+          #define ND_STATE_LAST_SDCARD_SUS_PATH 128
+          #endif
           EOF
           echo "[+] Verifying def.h has new-API symbols (no_su / zygote_next)"
           grep -q "susfs_set_current_proc_no_su" include/linux/susfs_def.h && grep -q "susfs_set_current_proc_umounted_for_zygote_next" include/linux/susfs_def.h || { echo "FATAL: def.h missing new-API functions"; exit 1; }
