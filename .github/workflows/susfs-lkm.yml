@@ -122,19 +122,19 @@ jobs:
           # 6.1-only susfs_ksu_handle_stat path, neither of which we want on 5.15/KMI8 yet.
           sed -i '/config KSU/,/help/{s/default y/default m/}' common/drivers/kernelsu/Kconfig
           python3 - <<'EOF'
-import re
-p = 'common/drivers/kernelsu/Kconfig'
-s = open(p, encoding='utf-8').read()
-pat = re.compile(r'(?m)^config KSU_SUSFS_SUS_SU\n(.*?)(?=^config |^if |^endif |^)', re.S)
-m = pat.search(s)
-if m:
-    inner = re.sub(r'(?m)^\s*default y\b', '\tdefault n', m.group(1))
-    s = s[:m.start(1)] + inner + s[m.end(1):]
-    open(p, 'w', encoding='utf-8').write(s)
-    print('[+] KSU_SUSFS_SUS_SU set to default n')
-else:
-    print('[!] KSU_SUSFS_SUS_SU block not found (check Kconfig)')
-EOF
+          import re
+          p = 'common/drivers/kernelsu/Kconfig'
+          s = open(p, encoding='utf-8').read()
+          pat = re.compile(r'(?m)^config KSU_SUSFS_SUS_SU\n(.*?)(?=^config |^if |^endif |^)', re.S)
+          m = pat.search(s)
+          if m:
+              inner = re.sub(r'(?m)^\s*default y\b', '\tdefault n', m.group(1))
+              s = s[:m.start(1)] + inner + s[m.end(1):]
+              open(p, 'w', encoding='utf-8').write(s)
+              print('[+] KSU_SUSFS_SUS_SU set to default n')
+          else:
+              print('[!] KSU_SUSFS_SUS_SU block not found (check Kconfig)')
+          EOF
           grep -n "KSU_SUSFS_SUS_SU" common/drivers/kernelsu/Kconfig
           echo "drivers/kernelsu/kernelsu.ko" >> common/android/gki_aarch64_modules
 
