@@ -161,7 +161,32 @@ jobs:
           echo "[+] Downloading SUSFS new-API source files (dev branch)"
           curl -L -o fs/susfs.c https://gitlab.com/pershoot/susfs4ksu/-/raw/gki-android14-6.1-dev_122425/kernel_patches/fs/susfs.c
           curl -L -o include/linux/susfs.h https://gitlab.com/pershoot/susfs4ksu/-/raw/gki-android14-6.1-dev_122425/kernel_patches/include/linux/susfs.h
-          curl -L -o include/linux/susfs_def.h https://gitlab.com/pershoot/susfs4ksu/-/raw/gki-android14-6.1-dev_122425/kernel_patches/include/linux/susfs_def.h
+          # dev-susfs KernelSU (setuid_hook.c/sucompat.c) needs the NEW susfs API
+          # (susfs_set_current_proc_no_su / _for_zygote_next). The 122425 branch's
+          # susfs_def.h is the OLD API (no TIF_PROC_NO_SU), so pull def.h from the
+          # newer aosp-android14-6.1-dev branch instead. susfs.c/susfs.h are
+          # byte-identical across both branches, so only def.h switches source.
+          curl -L -o include/linux/susfs_def.h https://gitlab.com/pershoot/susfs4ksu/-/raw/aosp-android14-6.1-dev/kernel_patches/include/linux/susfs_def.h
+          echo "[+] Adding BIT_* compat aliases (new def.h exposes AS_FLAGS_*, 122425-era patch code uses BIT_*)"
+          cat >> include/linux/susfs_def.h <<'EOF'
+          #ifndef BIT_SUS_PATH
+          #define BIT_SUS_PATH BIT(AS_FLAGS_SUS_PATH)
+          #endif
+          #ifndef BIT_SUS_MOUNT
+          #define BIT_SUS_MOUNT BIT(AS_FLAGS_SUS_MOUNT)
+          #endif
+          #ifndef BIT_SUS_KSTAT
+          #define BIT_SUS_KSTAT BIT(AS_FLAGS_SUS_KSTAT)
+          #endif
+          #ifndef BIT_OPEN_REDIRECT
+          #define BIT_OPEN_REDIRECT BIT(AS_FLAGS_OPEN_REDIRECT)
+          #endif
+          #ifndef BIT_SUS_MAPS
+          #define BIT_SUS_MAPS BIT(AS_FLAGS_SUS_MAP)
+          #endif
+          EOF
+          echo "[+] Verifying def.h has new-API symbols (no_su / zygote_next)"
+          grep -q "susfs_set_current_proc_no_su" include/linux/susfs_def.h && grep -q "susfs_set_current_proc_umounted_for_zygote_next" include/linux/susfs_def.h || { echo "FATAL: def.h missing new-API functions"; exit 1; }
           echo "[+] Porting 6.1 patch to 5.15 / KMI 8"
           cat > /tmp/fix_susfs_515.py <<'PYEOF'
           import io
