@@ -336,8 +336,38 @@ jobs:
           echo "[+] Final artifacts:"
           ls -lh ./output/
 
+      - name: Package AnyKernel3 Flashable Zip
+        run: |
+          echo "[+] Cloning AnyKernel3"
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3 AnyKernel3
+          rm -rf AnyKernel3/.git* AnyKernel3/.github AnyKernel3/README.md
+          cp ./output/Image-susfs-intree-android13-5.15 AnyKernel3/Image
+          cd AnyKernel3
+          # K60U (corot): android13-5.15 GKI, dtb 不替换（boot.img 自带 dtb 保持原样）
+          sed -i \
+            -e 's/^kernel.string=.*/kernel.string=KernelSU-Next + SUSFS (android13-5.15-2023-06 KMI8)/' \
+            -e 's/^do.devicecheck=.*/do.devicecheck=1/' \
+            -e 's/^device.names=.*/device.names=corot,22081212UG,22081212C,Redmi K60 Ultra,Xiaomi 13T Pro/' \
+            -e 's/^is_slot_device=.*/is_slot_device=1/' \
+            -e 's/^block.auto=.*/block.auto=1/' \
+            -e 's/^do.modules=.*/do.modules=0/' \
+            -e 's/^do.cleanup=.*/do.cleanup=0/' \
+            anykernel.sh
+          echo "[+] anykernel.sh key settings:"
+          grep -E '^(kernel.string|do.devicecheck|device.names|is_slot_device|block.auto|do.modules)=' anykernel.sh
+          zip -r9 ../KernelSU-Next-SUSFS-anykernel3-corot.zip . -x .git*
+          cd ..
+          echo "[+] Final artifacts:"
+          ls -lh ./output/ ./KernelSU-Next-SUSFS-anykernel3-corot.zip
+
       - name: Upload SUSFS Kernel Image (Intree)
         uses: actions/upload-artifact@v4
         with:
           name: Image-android13-5.15-susfs-intree
           path: ./output/Image-susfs-intree-android13-5.15
+
+      - name: Upload AnyKernel3 Flashable Zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: AnyKernel3-corot-android13-5.15-susfs-intree
+          path: ./KernelSU-Next-SUSFS-anykernel3-corot.zip
