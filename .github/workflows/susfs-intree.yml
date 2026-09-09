@@ -152,495 +152,158 @@ jobs:
         working-directory: android-kernel/common
         run: |
           set -e
-          echo "[+] Downloading SUSFS 6.1 kernel patch (pershoot gki-android14-6.1-dev_122425)"
-          curl -L -o /tmp/50_add_susfs.patch https://gitlab.com/pershoot/susfs4ksu/-/raw/gki-android14-6.1-dev_122425/kernel_patches/50_add_susfs_in_gki-android14-6.1.patch
-          echo "[+] Applying 50_add_susfs patch (21 hunks rejected on 5.15, ported below)"
+          echo "[+] Downloading SUSFS sources (simonpunk gki-android13-5.15-dev, SUSFS v2.3.0)"
+          curl -L -o /tmp/50_add_susfs.patch https://gitlab.com/simonpunk/susfs4ksu/-/raw/gki-android13-5.15-dev/kernel_patches/50_add_susfs_in_gki-android13-5.15.patch
+          curl -L -o fs/susfs.c https://gitlab.com/simonpunk/susfs4ksu/-/raw/gki-android13-5.15-dev/kernel_patches/fs/susfs.c
+          curl -L -o include/linux/susfs.h https://gitlab.com/simonpunk/susfs4ksu/-/raw/gki-android13-5.15-dev/kernel_patches/include/linux/susfs.h
+          curl -L -o include/linux/susfs_def.h https://gitlab.com/simonpunk/susfs4ksu/-/raw/gki-android13-5.15-dev/kernel_patches/include/linux/susfs_def.h
+          echo "[+] Verifying new-API def.h (TIF_PROC_NO_SU / zygote_next required by KSU-Next dev-susfs)"
+          grep -q "TIF_PROC_NO_SU" include/linux/susfs_def.h \
+            && grep -q "susfs_set_current_proc_umounted_for_zygote_next" include/linux/susfs_def.h \
+            || { echo "FATAL: susfs_def.h missing new-API symbols"; exit 1; }
+          echo "[+] Applying 50_add_susfs patch (3 hunks expected to reject on 5.15.78, ported below)"
           git apply --reject /tmp/50_add_susfs.patch || echo "Partial reject expected, continuing..."
           echo "[+] Rejected hunks before porting:"
           find . -name '*.rej' || true
-          echo "[+] Downloading SUSFS new-API source files (dev branch)"
-          curl -L -o fs/susfs.c https://gitlab.com/pershoot/susfs4ksu/-/raw/gki-android14-6.1-dev_122425/kernel_patches/fs/susfs.c
-          curl -L -o include/linux/susfs.h https://gitlab.com/pershoot/susfs4ksu/-/raw/gki-android14-6.1-dev_122425/kernel_patches/include/linux/susfs.h
-          # dev-susfs KernelSU (setuid_hook.c/sucompat.c) needs the NEW susfs API
-          # (susfs_set_current_proc_no_su / _for_zygote_next). The 122425 branch's
-          # susfs_def.h is the OLD API (no TIF_PROC_NO_SU), so pull def.h from the
-          # newer aosp-android14-6.1-dev branch instead. susfs.c/susfs.h are
-          # byte-identical across both branches, so only def.h switches source.
-          curl -L -o include/linux/susfs_def.h https://gitlab.com/pershoot/susfs4ksu/-/raw/aosp-android14-6.1-dev/kernel_patches/include/linux/susfs_def.h
-          echo "[+] Adding BIT_* compat aliases (new def.h exposes AS_FLAGS_*, 122425-era patch code uses BIT_*)"
-          cat >> include/linux/susfs_def.h <<'EOF'
-          #ifndef BIT_SUS_PATH
-          #define BIT_SUS_PATH BIT(AS_FLAGS_SUS_PATH)
-          #endif
-          #ifndef BIT_SUS_MOUNT
-          #define BIT_SUS_MOUNT BIT(AS_FLAGS_SUS_MOUNT)
-          #endif
-          #ifndef BIT_SUS_KSTAT
-          #define BIT_SUS_KSTAT BIT(AS_FLAGS_SUS_KSTAT)
-          #endif
-          #ifndef BIT_OPEN_REDIRECT
-          #define BIT_OPEN_REDIRECT BIT(AS_FLAGS_OPEN_REDIRECT)
-          #endif
-          #ifndef BIT_SUS_MAPS
-          #define BIT_SUS_MAPS BIT(AS_FLAGS_SUS_MAP)
-          #endif
-          #ifndef ND_STATE_LAST_SDCARD_SUS_PATH
-          #define ND_STATE_LAST_SDCARD_SUS_PATH 128
-          #endif
-          EOF
-          echo "[+] Verifying def.h has new-API symbols (no_su / zygote_next)"
-          grep -q "susfs_set_current_proc_no_su" include/linux/susfs_def.h && grep -q "susfs_set_current_proc_umounted_for_zygote_next" include/linux/susfs_def.h || { echo "FATAL: def.h missing new-API functions"; exit 1; }
-          echo "[+] Porting 6.1 patch to 5.15 / KMI 8"
-          cat > /tmp/fix_susfs_515.py <<'PYEOF'
+          cat > /tmp/fix_susfs_kmi8.py <<'PYEOF'
           import io
           import sys
 
-          def write(path, s):
-              with io.open(path, 'w', encoding='utf-8', newline='\n') as f:
-                  f.write(s)
-
-          def read(path):
-              with io.open(path, encoding='utf-8') as f:
-                  return f.read()
-
           def patch_file(path, old, new, tag):
-              s = read(path)
+              with io.open(path, encoding='utf-8') as f:
+                  s = f.read()
               n = s.count(old)
               if n != 1:
-                  sys.stderr.write('[FAIL] %s: anchor found %d times (expected 1)\n' % (tag, n))
+                  sys.stderr.write("[FAIL] %s: anchor found %d times (expected 1)\n" % (tag, n))
                   sys.exit(1)
-              write(path, s.replace(old, new, 1))
-              sys.stdout.write('[OK] %s\n' % tag)
+              s = s.replace(old, new)
+              with io.open(path, 'w', encoding='utf-8', newline='\n') as f:
+                  f.write(s)
+              sys.stdout.write("[OK] %s\n" % tag)
 
-          def apply_in(path, sig, marker, pre, post, tag):
-              s = read(path)
-              i = s.find(sig)
-              if i < 0:
-                  sys.stderr.write('[FAIL] %s: signature not found\n' % tag)
-                  sys.exit(1)
-              j = s.find(marker, i)
-              if j < 0:
-                  sys.stderr.write('[FAIL] %s: marker not found after signature\n' % tag)
-                  sys.exit(1)
-              write(path, s[:j] + pre + s[j:j+len(marker)] + post + s[j+len(marker):])
-              sys.stdout.write('[OK] %s\n' % tag)
-
-          def append_to(path, text, tag):
-              write(path, read(path).rstrip('\n') + '\n' + text)
-              sys.stdout.write('[OK] %s\n' % tag)
-
-          # =====================================================================
-          # fs/namei.c  (5.15 removed lookup_one_qstr_excl -> port to __lookup_hash)
-          # =====================================================================
-          # 1a) __lookup_hash: declare found_sus_path
+          # 1) kernel/sys.c: 补丁 hunk 上下文含 "bool ruid_new, euid_new, suid_new;"
+          #    (5.15.78 无此行被拒)，改为锚定 kuid_t 声明插入 ksu_handle_setresuid 调用
           patch_file(
-              'fs/namei.c',
-              '\tstruct dentry *dentry = lookup_dcache(name, base, flags);\n'
-              '\tstruct dentry *old;\n'
-              '\tstruct inode *dir = base->d_inode;\n',
-              '\tstruct dentry *dentry = lookup_dcache(name, base, flags);\n'
-              '\tstruct dentry *old;\n'
-              '\tstruct inode *dir = base->d_inode;\n'
-              '#ifdef CONFIG_KSU_SUSFS_SUS_PATH\n'
-              '\tbool found_sus_path __maybe_unused = false;\n'
-              '#endif\n',
-              'namei __lookup_hash decl')
+              'kernel/sys.c',
+              "\tkuid_t kruid, keuid, ksuid;\n\n\tkruid = make_kuid(ns, ruid);",
+              "\tkuid_t kruid, keuid, ksuid;\n\n"
+              "#ifdef CONFIG_KSU_SUSFS\n"
+              "\t(void)ksu_handle_setresuid(ruid, euid, suid);\n"
+              "#endif\n\n"
+              "\tkruid = make_kuid(ns, ruid);",
+              'kernel/sys.c (ksu_handle_setresuid)')
 
-          # 1b) __lookup_hash: retry label + sus inode re-lookup (mirrors 6.1 lookup_one_qstr_excl)
-          patch_file(
-              'fs/namei.c',
-              '\tdentry = d_alloc(base, name);\n'
-              '\tif (unlikely(!dentry))\n'
-              '\t\treturn ERR_PTR(-ENOMEM);\n'
-              '\n'
-              '\told = dir->i_op->lookup(dir, dentry, flags);\n'
-              '\tif (unlikely(old)) {\n'
-              '\t\tdput(dentry);\n'
-              '\t\tdentry = old;\n'
-              '\t}\n'
-              '\treturn dentry;\n'
-              '}',
-              '\tdentry = d_alloc(base, name);\n'
-              '#ifdef CONFIG_KSU_SUSFS_SUS_PATH\n'
-              'retry:\n'
-              '#endif\n'
-              '\tif (unlikely(!dentry))\n'
-              '\t\treturn ERR_PTR(-ENOMEM);\n'
-              '\n'
-              '\told = dir->i_op->lookup(dir, dentry, flags);\n'
-              '\tif (unlikely(old)) {\n'
-              '\t\tdput(dentry);\n'
-              '\t\tdentry = old;\n'
-              '\t}\n'
-              '#ifdef CONFIG_KSU_SUSFS_SUS_PATH\n'
-              '\tif (unlikely(dentry) && !IS_ERR(dentry) && dentry->d_inode && !found_sus_path && susfs_is_inode_sus_path(dentry->d_inode)) {\n'
-              '\t\tif (d_in_lookup(dentry))\n'
-              '\t\t\td_lookup_done(dentry);\n'
-              '\t\tif (!(flags & LOOKUP_RCU))\n'
-              '\t\t\tdput(dentry);\n'
-              '\t\tdentry = d_alloc(base, &susfs_fake_qstr_name);\n'
-              '\t\tfound_sus_path = true;\n'
-              '\t\tgoto retry;\n'
-              '\t}\n'
-              '#endif\n'
-              '\treturn dentry;\n'
-              '}',
-              'namei __lookup_hash retry')
-
-          # 1c) lookup_fast: the 6.1 RCU block referenced nd->next_seq/backup_next_seq
-          #     which do not exist here; the RCU lookup uses a local 'seq'.
-          #     Also drop the now-unused backup_next_seq local var.
-          patch_file(
-              'fs/namei.c',
-              '\tunsigned int backup_next_seq = nd->next_seq;\n',
-              '',
-              'namei drop unused backup_next_seq')
-
-          rcu_pre = (
-              '#ifdef CONFIG_KSU_SUSFS_SUS_PATH\n'
-              '\t\tif (is_nd_state_lookup_last_and_open_last && parent->d_inode) {\n'
-              '\t\t\tif (susfs_is_base_dentry_android_data_dir(parent) &&\n'
-              '\t\t\t\tsusfs_is_sus_android_data_d_name_found(nd->last.name))\n'
-              '\t\t\t{\n'
-              '\t\t\t\tdentry = __d_lookup_rcu(parent, &susfs_fake_qstr_name, &seq);\n'
-              '\t\t\t\tgoto skip_orig_flow1;\n'
-              '\t\t\t} else if (susfs_is_base_dentry_sdcard_dir(parent) &&\n'
-              '\t\t\t\t\tsusfs_is_sus_sdcard_d_name_found(nd->last.name))\n'
-              '\t\t\t{\n'
-              '\t\t\t\tdentry = __d_lookup_rcu(parent, &susfs_fake_qstr_name, &seq);\n'
-              '\t\t\t\tgoto skip_orig_flow1;\n'
-              '\t\t\t}\n'
-              '\t\t}\n'
-              '#endif\n')
-          rcu_post = (
-              '\n'
-              '#ifdef CONFIG_KSU_SUSFS_SUS_PATH\n'
-              '\t\tif (is_nd_state_lookup_last_and_open_last && dentry && !IS_ERR(dentry) && dentry->d_inode) {\n'
-              '\t\t\tif (susfs_is_inode_sus_path(dentry->d_inode)) {\n'
-              '\t\t\t\tdentry = __d_lookup_rcu(parent, &susfs_fake_qstr_name, &seq);\n'
-              '\t\t\t}\n'
-              '\t\t}\n'
-              'skip_orig_flow1:\n'
-              '#endif\n')
-          apply_in('fs/namei.c',
-                   'static struct dentry *lookup_fast(struct nameidata *nd,',
-                   '\t\tdentry = __d_lookup_rcu(parent, &nd->last, &seq);',
-                   rcu_pre, rcu_post, 'namei lookup_fast RCU')
-
-          # 1d) open_last_lookups: 6.1 sets ND_STATE_OPEN_LAST which 5.15 does not.
-          patch_file(
-              'fs/namei.c',
-              '\tconst char *res;\n'
-              '\n'
-              '\tnd->flags |= op->intent;',
-              '\tconst char *res;\n'
-              '#ifdef CONFIG_KSU_SUSFS_SUS_PATH\n'
-              '\tnd->state |= ND_STATE_OPEN_LAST;\n'
-              '#endif\n'
-              '\tnd->flags |= op->intent;',
-              'namei open_last_lookups ND_STATE_OPEN_LAST')
-
-          # =====================================================================
-          # fs/readdir.c  (5.15 fill*d_* return int, 6.1 wrote bool)
-          # =====================================================================
-          filter_c = (
-              '#ifdef CONFIG_KSU_SUSFS_SUS_PATH\n'
-              '\t{\n'
-              '\t\tstruct inode *inode __maybe_unused;\n'
-              '\n'
-              '\t\tif (buf->is_base_dentry_android_data_root_dir) {\n'
-              '\t\t\tif (susfs_is_sus_android_data_d_name_found(name)) {\n'
-              '\t\t\t\treturn 0;\n'
-              '\t\t\t}\n'
-              '\t\t} else if (buf->is_base_dentry_sdcard_root_dir) {\n'
-              '\t\t\tif (susfs_is_sus_sdcard_d_name_found(name)) {\n'
-              '\t\t\t\treturn 0;\n'
-              '\t\t\t}\n'
-              '\t\t}\n'
-              '\n'
-              '\t\tinode = ilookup(buf->sb, ino);\n'
-              '\t\tif (!inode) {\n'
-              '\t\t\tgoto filter_done;\n'
-              '\t\t}\n'
-              '\t\tif (susfs_is_inode_sus_path(inode)) {\n'
-              '\t\t\tiput(inode);\n'
-              '\t\t\treturn 0;\n'
-              '\t\t}\n'
-              '\t\tiput(inode);\n'
-              'filter_done:\n'
-              '\t\t;\n'
-              '\t}\n'
-              '#endif\n')
-          apply_in('fs/readdir.c', 'static int fillonedir(struct dir_context *ctx',
-                   '\tbuf->result++;', filter_c, '', 'readdir fillonedir')
-          apply_in('fs/readdir.c', 'static int filldir(struct dir_context *ctx',
-                   '\tdirent = buf->current_dir;', filter_c, '', 'readdir filldir')
-          apply_in('fs/readdir.c', 'static int filldir64(struct dir_context *ctx',
-                   '\tdirent = buf->current_dir;', filter_c, '', 'readdir filldir64')
-          apply_in('fs/readdir.c', 'static int compat_fillonedir(struct dir_context *ctx',
-                   '\tbuf->result++;', filter_c, '', 'readdir compat_fillonedir')
-          apply_in('fs/readdir.c', 'static int compat_filldir(struct dir_context *ctx',
-                   '\tdirent = buf->current_dir;', filter_c, '', 'readdir compat_filldir')
-
-          # 50_add_susfs 补丁成功应用在 fill* 顶部带入了 `struct inode *inode;`，
-          # 但隐藏路径分支并不总是使用它，clang 的 -Werror 会将其判为
-          # -Wunused-variable 致命报错。这里用正则统一补上 __maybe_unused 抑制
-          # （filter_c 内已带 __maybe_unused 的声明因行尾多出属性字段而不被匹配）。
-          import re
-          _rd = read('fs/readdir.c')
-          _rd = re.sub(r'(?m)^(\t{1,4})struct inode \*inode;$',
-                       r'\1struct inode *inode __maybe_unused;', _rd)
-          write('fs/readdir.c', _rd)
-          sys.stdout.write('[OK] readdir patch-residue inode -> __maybe_unused\n')
-
-          # =====================================================================
-          # fs/namespace.c  (6.1 header helpers + tail functions, ported)
-          # =====================================================================
-          patch_file(
-              'fs/namespace.c',
-              '#include <linux/mnt_idmapping.h>\n',
-              '#include <linux/mnt_idmapping.h>\n'
-              '#if defined(CONFIG_KSU_SUSFS_SUS_MOUNT) || defined(CONFIG_KSU_SUSFS_TRY_UMOUNT)\n'
-              '#include <linux/susfs_def.h>\n'
-              '#endif\n'
-              '#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n'
-              'extern bool susfs_is_current_ksu_domain(void);\n'
-              'extern bool susfs_is_current_zygote_domain(void);\n'
-              'extern bool susfs_is_boot_completed_triggered;\n'
-              '\n'
-              'static DEFINE_IDA(susfs_ksu_mnt_group_ida);\n'
-              '\n'
-              '#define CL_COPY_MNT_NS BIT(25) /* used by copy_mnt_ns() */\n'
-              '#endif\n'
-              '#ifdef CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT\n'
-              'extern void susfs_auto_add_sus_ksu_default_mount(const char __user *to_pathname);\n'
-              'bool susfs_is_auto_add_sus_ksu_default_mount_enabled = true;\n'
-              '#endif\n'
-              '#ifdef CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT\n'
-              'extern void susfs_auto_add_sus_bind_mount(const char *pathname, struct path *path_target);\n'
-              'bool susfs_is_auto_add_sus_bind_mount_enabled = true;\n'
-              '#endif\n'
-              '#ifdef CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT\n'
-              'extern void susfs_auto_add_try_umount_for_bind_mount(struct path *path);\n'
-              'bool susfs_is_auto_add_try_umount_for_bind_mount_enabled = true;\n'
-              '#endif\n',
-              'namespace header')
-
-          ns_tail = (
-              '#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n'
-              'void susfs_reorder_mnt_id(void) {\n'
-              '\tstruct mnt_namespace *mnt_ns = current->nsproxy->mnt_ns;\n'
-              '\tstruct mount *mnt;\n'
-              '\tint first_mnt_id = 0;\n'
-              '\n'
-              '\tif (!mnt_ns) {\n'
-              '\t\treturn;\n'
-              '\t}\n'
-              '\n'
-              '\tget_mnt_ns(mnt_ns);\n'
-              '\tfirst_mnt_id = list_first_entry(&mnt_ns->list, struct mount, mnt_list)->mnt_id;\n'
-              '\tlist_for_each_entry(mnt, &mnt_ns->list, mnt_list) {\n'
-              '\t\tif (mnt->mnt_id == DEFAULT_KSU_MNT_ID) {\n'
-              '\t\t\tcontinue;\n'
-              '\t\t}\n'
-              '\t\tWRITE_ONCE(mnt->mnt.susfs_mnt_id_backup, READ_ONCE(mnt->mnt_id));\n'
-              '\t\tWRITE_ONCE(mnt->mnt_id, first_mnt_id++);\n'
-              '\t}\n'
-              '\tput_mnt_ns(mnt_ns);\n'
-              '}\n'
-              'EXPORT_SYMBOL(susfs_reorder_mnt_id);\n'
-              '#endif\n'
-              '#ifdef CONFIG_KSU_SUSFS\n'
-              'bool susfs_is_mnt_devname_ksu(struct path *path) {\n'
-              '\tstruct mount *mnt;\n'
-              '\n'
-              '\tif (path && path->mnt) {\n'
-              '\t\tmnt = real_mount(path->mnt);\n'
-              '\t\tif (mnt && mnt->mnt_devname && !strcmp(mnt->mnt_devname, "KSU")) {\n'
-              '\t\t\treturn true;\n'
-              '\t\t}\n'
-              '\t}\n'
-              '\treturn false;\n'
-              '}\n'
-              'EXPORT_SYMBOL(susfs_is_mnt_devname_ksu);\n'
-              '#endif\n'
-              '#ifdef CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT\n'
-              'EXPORT_SYMBOL(susfs_is_auto_add_sus_ksu_default_mount_enabled);\n'
-              '#endif\n'
-              '#ifdef CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT\n'
-              'EXPORT_SYMBOL(susfs_is_auto_add_sus_bind_mount_enabled);\n'
-              '#endif\n'
-              '#ifdef CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT\n'
-              'EXPORT_SYMBOL(susfs_is_auto_add_try_umount_for_bind_mount_enabled);\n'
-              '#endif\n')
-          append_to('fs/namespace.c', ns_tail, 'namespace tail + exports')
-
-          # =====================================================================
-          # fs/proc/task_mmu.c  (SUS_MAP leak hiding for /proc/self/smaps)
-          # =====================================================================
+          # 2) fs/proc/task_mmu.c: show_smap 补丁 hunk 上下文含 "if (!vma_pages(vma))"
+          #    (5.15.78 无此行被拒)，改为锚定函数开头插入 SUS_MAP 隐藏检查
           patch_file(
               'fs/proc/task_mmu.c',
-              '#include <linux/pkeys.h>\n',
-              '#include <linux/pkeys.h>\n'
-              '#if defined(CONFIG_KSU_SUSFS_SUS_KSTAT) || defined(CONFIG_KSU_SUSFS_SUS_MAP)\n'
-              '#include <linux/susfs_def.h>\n'
-              '#endif\n',
-              'task_mmu include')
+              "static int show_smap(struct seq_file *m, void *v)\n"
+              "{\n"
+              "\tstruct vm_area_struct *vma = v;\n"
+              "\tstruct mem_size_stats mss;\n\n"
+              "\tmemset(&mss, 0, sizeof(mss));",
+              "static int show_smap(struct seq_file *m, void *v)\n"
+              "{\n"
+              "\tstruct vm_area_struct *vma = v;\n"
+              "\tstruct mem_size_stats mss;\n\n"
+              "#ifdef CONFIG_KSU_SUSFS_SUS_MAP\n"
+              "\tif (vma->vm_file) {\n"
+              "\t\tif (SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))\n"
+              "\t\t\treturn 0;\n"
+              "\t}\n"
+              "#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP\n\n"
+              "\tmemset(&mss, 0, sizeof(mss));",
+              'fs/proc/task_mmu.c (show_smap SUS_MAP)')
 
-          smap_pre = (
-              '#ifdef CONFIG_KSU_SUSFS_SUS_MAP\n'
-              '\tif (vma->vm_file &&\n'
-              '\t\tunlikely(file_inode(vma->vm_file)->i_mapping->flags & BIT_SUS_MAPS) &&\n'
-              '\t\tsusfs_is_current_proc_umounted())\n'
-              '\t{\n'
-              '\t\tshow_map_vma(m, vma);\n'
-              '\t\tSEQ_PUT_DEC("Size:           ", vma->vm_end - vma->vm_start);\n'
-              '\t\tSEQ_PUT_DEC(" kB\\nKernelPageSize: ", vma_kernel_pagesize(vma));\n'
-              '\t\tSEQ_PUT_DEC(" kB\\nMMUPageSize:    ", vma_mmu_pagesize(vma));\n'
-              '\t\tseq_puts(m, " kB\\n");\n'
-              '\t\t__show_smap(m, &mss, false);\n'
-              '\t\tseq_printf(m, "THPeligible:    %d\\n", 0);\n'
-              '\t\tif (arch_pkeys_enabled())\n'
-              '\t\t\tseq_printf(m, "ProtectionKey:  %8u\\n", vma_pkey(vma));\n'
-              '\t\tseq_puts(m, "VmFlags: mr mw me");\n'
-              '\t\tseq_putc(m, \'\\n\');\n'
-              '\t\treturn 0;\n'
-              '\t}\n'
-              '#endif\n')
-          apply_in('fs/proc/task_mmu.c', 'static int show_smap(struct seq_file *m, void *v)',
-                   '\tsmap_gather_stats(vma, &mss, 0);', smap_pre, '', 'task_mmu show_smap')
-
-          roll_pre = (
-              '#ifdef CONFIG_KSU_SUSFS_SUS_MAP\n'
-              '\t\tif (vma->vm_file &&\n'
-              '\t\t\tunlikely(file_inode(vma->vm_file)->i_mapping->flags & BIT_SUS_MAPS) &&\n'
-              '\t\t\tsusfs_is_current_proc_umounted())\n'
-              '\t\t{\n'
-              '\t\t\tmemset(&mss, 0, sizeof(mss));\n'
-              '\t\t\tgoto bypass_orig_flow;\n'
-              '\t\t}\n'
-              '#endif\n')
-          roll_post = (
-              '\n'
-              '#ifdef CONFIG_KSU_SUSFS_SUS_MAP\n'
-              'bypass_orig_flow:\n'
-              '#endif\n')
-          apply_in('fs/proc/task_mmu.c', 'static int show_smaps_rollup(struct seq_file *m, void *v)',
-                   '\t\tsmap_gather_stats(vma, &mss, 0);', roll_pre, roll_post, 'task_mmu show_smaps_rollup')
-
-          # =====================================================================
-          # fs/proc/base.c  (SUS_MAP leak hiding for /proc/pid/map_files)
-          # =====================================================================
+          # 3) fs/namei.c: lookup_one_qstr_excl 尾块 hunk (5.15.78 无该函数，
+          #    对应 __lookup_hash)。前两个 hunk (found_sus_path 声明/retry 标签)
+          #    已按上下文自动落到 __lookup_hash，此处补上被拒的 SUS_PATH 尾块。
           patch_file(
-              'fs/proc/base.c',
-              '#include <linux/cpufreq_times.h>\n',
-              '#include <linux/cpufreq_times.h>\n'
-              '#ifdef CONFIG_KSU_SUSFS_SUS_MAP\n'
-              '#include <linux/susfs_def.h>\n'
-              '#endif\n',
-              'base.c include')
+              'fs/namei.c',
+              "\tdentry = d_alloc(base, name);\n"
+              "#ifdef CONFIG_KSU_SUSFS_SUS_PATH\n"
+              "retry:\n"
+              "#endif\n"
+              "\tif (unlikely(!dentry))\n"
+              "\t\treturn ERR_PTR(-ENOMEM);\n\n"
+              "\told = dir->i_op->lookup(dir, dentry, flags);\n"
+              "\tif (unlikely(old)) {\n"
+              "\t\tdput(dentry);\n"
+              "\t\tdentry = old;\n"
+              "\t}\n"
+              "\treturn dentry;\n"
+              "}",
+              "\tdentry = d_alloc(base, name);\n"
+              "#ifdef CONFIG_KSU_SUSFS_SUS_PATH\n"
+              "retry:\n"
+              "#endif\n"
+              "\tif (unlikely(!dentry))\n"
+              "\t\treturn ERR_PTR(-ENOMEM);\n\n"
+              "\told = dir->i_op->lookup(dir, dentry, flags);\n"
+              "\tif (unlikely(old)) {\n"
+              "\t\tdput(dentry);\n"
+              "\t\tdentry = old;\n"
+              "\t}\n"
+              "#ifdef CONFIG_KSU_SUSFS_SUS_PATH\n"
+              "\tif (unlikely(dentry) && !IS_ERR(dentry) && dentry->d_inode && !found_sus_path && susfs_is_inode_sus_path(dentry->d_inode)) {\n"
+              "\t\tif (d_in_lookup(dentry))\n"
+              "\t\t\td_lookup_done(dentry);\n"
+              "\t\tif (!(flags & LOOKUP_RCU))\n"
+              "\t\t\tdput(dentry);\n"
+              "\t\tdentry = d_alloc(base, &susfs_fake_qstr_name);\n"
+              "\t\tfound_sus_path = true;\n"
+              "\t\tgoto retry;\n"
+              "\t}\n"
+              "#endif\n"
+              "\treturn dentry;\n"
+              "}",
+              'fs/namei.c (__lookup_hash SUS_PATH tail)')
 
-          map_skip = (
-              '#ifdef CONFIG_KSU_SUSFS_SUS_MAP\n'
-              '\t\tif (unlikely(file_inode(vma->vm_file)->i_mapping->flags & BIT_SUS_MAPS) &&\n'
-              '\t\t\tsusfs_is_current_proc_umounted())\n'
-              '\t\t{\n'
-              '\t\t\tcontinue;\n'
-              '\t\t}\n'
-              '#endif\n')
-          apply_in('fs/proc/base.c',
-                   'proc_map_files_readdir(struct file *file, struct dir_context *ctx)',
-                   '\t\tif (!vma->vm_file)\n'
-                   '\t\t\tcontinue;\n',
-                   '', map_skip, 'base.c proc_map_files_readdir skip')
-
-          # =====================================================================
-          # fs/notify/fdinfo.c  -- 6.1 introduced a 3-arg inotify_fdinfo that requires
-          # the 3-arg show_fdinfo callback signature; the whole signature hunk was
-          # rejected on 5.15. Revert inotify_fdinfo to the 2-arg original so fdinfo.c
-          # stays self-consistent (SUS_MOUNT fdinfo leakage hiding is skipped on 5.15).
-          # =====================================================================
-          fdinfo_orig = (
-              'static void inotify_fdinfo(struct seq_file *m, struct fsnotify_mark *mark)\n'
-              '{\n'
-              '\tstruct inotify_inode_mark *inode_mark;\n'
-              '\tstruct inode *inode;\n'
-              '\n'
-              '\tif (mark->connector->type != FSNOTIFY_OBJ_TYPE_INODE)\n'
-              '\t\treturn;\n'
-              '\n'
-              '\tinode_mark = container_of(mark, struct inotify_inode_mark, fsn_mark);\n'
-              '\tinode = igrab(fsnotify_conn_inode(mark->connector));\n'
-              '\tif (inode) {\n'
-              '\t\tseq_printf(m, "inotify wd:%x ino:%lx sdev:%x mask:%x ignored_mask:0 ",\n'
-              '\t\t\t   inode_mark->wd, inode->i_ino, inode->i_sb->s_dev,\n'
-              '\t\t\t   inotify_mark_user_mask(mark));\n'
-              '\t\tshow_mark_fhandle(m, inode);\n'
-              '\t\tseq_putc(m, \'\\n\');\n'
-              '\t\tiput(inode);\n'
-              '\t}\n'
-              '}\n')
-          fdinfo_src = read('fs/notify/fdinfo.c')
-          fstart = fdinfo_src.find('#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\nstatic void inotify_fdinfo')
-          if fstart < 0:
-              sys.stderr.write('[FAIL] fdinfo: 3-arg inotify_fdinfo block not found\n')
-              sys.exit(1)
-          fend = fdinfo_src.find('void inotify_show_fdinfo', fstart)
-          if fend < 0:
-              sys.stderr.write('[FAIL] fdinfo: inotify_show_fdinfo not found\n')
-              sys.exit(1)
-          fdinfo_src = fdinfo_src[:fstart] + fdinfo_orig + fdinfo_src[fend:]
-          write('fs/notify/fdinfo.c', fdinfo_src)
-          sys.stdout.write('[OK] fdinfo revert inotify_fdinfo to 2-arg\n')
-
-          # =====================================================================
-          # fs/susfs.c  --  new API builds susfs.o into vmlinux; export all symbols
-          # the kernelsu.ko (drivers/kernelsu) module links against.
-          # =====================================================================
-          exports = (
-              '#include <linux/export.h>\n'
-              'EXPORT_SYMBOL(susfs_starts_with);\n'
-              'EXPORT_SYMBOL(susfs_set_i_state_on_external_dir);\n'
-              'EXPORT_SYMBOL(susfs_add_sus_path);\n'
-              'EXPORT_SYMBOL(susfs_add_sus_path_loop);\n'
-              'EXPORT_SYMBOL(susfs_run_sus_path_loop);\n'
-              'EXPORT_SYMBOL(susfs_is_base_dentry_android_data_dir);\n'
-              'EXPORT_SYMBOL(susfs_is_base_dentry_sdcard_dir);\n'
-              'EXPORT_SYMBOL(susfs_is_sus_android_data_d_name_found);\n'
-              'EXPORT_SYMBOL(susfs_is_sus_sdcard_d_name_found);\n'
-              'EXPORT_SYMBOL(susfs_is_inode_sus_path);\n'
-              'EXPORT_SYMBOL(susfs_add_sus_mount);\n'
-              'EXPORT_SYMBOL(susfs_auto_add_sus_bind_mount);\n'
-              'EXPORT_SYMBOL(susfs_auto_add_sus_ksu_default_mount);\n'
-              'EXPORT_SYMBOL(susfs_add_sus_kstat);\n'
-              'EXPORT_SYMBOL(susfs_update_sus_kstat);\n'
-              'EXPORT_SYMBOL(susfs_sus_ino_for_generic_fillattr);\n'
-              'EXPORT_SYMBOL(susfs_sus_ino_for_show_map_vma);\n'
-              'EXPORT_SYMBOL(susfs_add_try_umount);\n'
-              'EXPORT_SYMBOL(susfs_try_umount);\n'
-              'EXPORT_SYMBOL(susfs_auto_add_try_umount_for_bind_mount);\n'
-              'EXPORT_SYMBOL(susfs_set_uname);\n'
-              'EXPORT_SYMBOL(susfs_spoof_uname);\n'
-              'EXPORT_SYMBOL(susfs_set_log);\n'
-              'EXPORT_SYMBOL(susfs_set_cmdline_or_bootconfig);\n'
-              'EXPORT_SYMBOL(susfs_spoof_cmdline_or_bootconfig);\n'
-              'EXPORT_SYMBOL(susfs_add_open_redirect);\n'
-              'EXPORT_SYMBOL(susfs_get_redirected_path);\n'
-              'EXPORT_SYMBOL(susfs_get_sus_su_working_mode);\n'
-              'EXPORT_SYMBOL(susfs_add_sus_map);\n'
-              'EXPORT_SYMBOL(susfs_get_enabled_features);\n'
-              'EXPORT_SYMBOL(susfs_set_avc_log_spoofing);\n'
-              'EXPORT_SYMBOL(susfs_is_log_enabled);\n')
-          append_to('fs/susfs.c', exports, 'susfs.c exports')
-
-          sys.stdout.write('All 5.15 ports applied.\n')
+          sys.stdout.write("All KMI8 hunk fixes applied.\n")
           PYEOF
-          python3 /tmp/fix_susfs_515.py
+          python3 /tmp/fix_susfs_kmi8.py
+          echo "[+] Adding VMA_PAD_START compat macro (referenced by task_mmu show_map_vma OPEN_REDIRECT branch; no upstream definition on 5.15)"
+          cat >> include/linux/susfs_def.h <<'EOF'
+
+          #ifndef VMA_PAD_START
+          #define VMA_PAD_START(vma) (vma)->vm_start
+          #endif
+          EOF
+          echo "[+] Exporting susfs symbols for KernelSU-Next supercalls (5.15-dev API names)"
+          cat >> fs/susfs.c <<'EOF'
+
+          #include <linux/export.h>
+          EXPORT_SYMBOL(susfs_add_sus_path);
+          EXPORT_SYMBOL(susfs_add_sus_path_loop);
+          EXPORT_SYMBOL(susfs_is_inode_sus_path);
+          EXPORT_SYMBOL(susfs_set_hide_sus_mnts_for_non_su_procs);
+          EXPORT_SYMBOL(susfs_add_sus_kstat);
+          EXPORT_SYMBOL(susfs_update_sus_kstat);
+          EXPORT_SYMBOL(susfs_sus_kstat_spoof_generic_fillattr);
+          EXPORT_SYMBOL(susfs_sus_kstat_spoof_show_map_vma);
+          EXPORT_SYMBOL(susfs_set_uname);
+          EXPORT_SYMBOL(susfs_spoof_uname);
+          EXPORT_SYMBOL(susfs_enable_log);
+          EXPORT_SYMBOL(susfs_set_cmdline_or_bootconfig);
+          EXPORT_SYMBOL(susfs_spoof_cmdline_or_bootconfig);
+          EXPORT_SYMBOL(susfs_add_open_redirect);
+          EXPORT_SYMBOL(susfs_add_sus_map);
+          EXPORT_SYMBOL(susfs_set_avc_log_spoofing);
+          EXPORT_SYMBOL(susfs_get_enabled_features);
+          EXPORT_SYMBOL(susfs_show_variant);
+          EXPORT_SYMBOL(susfs_show_version);
+          EXPORT_SYMBOL(susfs_start_sdcard_monitor_fn);
+          EXPORT_SYMBOL(susfs_init);
+          EOF
           echo "[+] Removing .rej leftovers"
           find . -name '*.rej' -delete
           echo "[+] Verifying SUSFS integration"
           test -f fs/susfs.c && test -f include/linux/susfs.h && test -f include/linux/susfs_def.h
           grep -n "susfs.o" fs/Makefile
+          grep -q "susfs_is_inode_sus_path" fs/namei.c
+          grep -q "SUSFS_IS_INODE_SUS_MAP" fs/proc/task_mmu.c
+          grep -q "ksu_handle_setresuid" kernel/sys.c
+          grep -q "VMA_PAD_START" include/linux/susfs_def.h
           echo "[+] SUSFS integration done."
 
       - name: Make Working Directory Clean to Avoid Dirty
