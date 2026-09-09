@@ -29,24 +29,26 @@ jobs:
           remove-haskell: 'true'
           remove-codeql: 'true'
 
-      - name: Checkout KernelSU-Next (next-susfs)
+      - name: Checkout KernelSU-Next (dev-susfs, newest KSU >=33188)
         uses: actions/checkout@v4
         with:
           repository: pershoot/KernelSU-Next
-          ref: next-susfs
+          ref: dev-susfs
           path: KernelSU-Next
           fetch-depth: 0
 
-      - name: Point origin/HEAD at next-susfs (fix KERNEL_SU_VERSION)
+      - name: Point origin/HEAD at dev-susfs (fix KERNEL_SU_VERSION)
         run: |
-          # KernelSU-Next/kernel/Makefile computes KERNEL_SU_VERSION from git describe.
+          # KernelSU-Next/kernel computes KERNEL_SU_VERSION from git describe.
           # With a detached checkout origin/HEAD is missing, so the tags/hash fallback
-          # prints "fatal: ambiguous argument 'origin/HEAD'" and leaves KERNEL_SU_VERSION
-          # empty -> core_hook.c "use of undeclared identifier 'KERNEL_SU_VERSION'".
-          git -C $GITHUB_WORKSPACE/KernelSU-Next checkout next-susfs
-          git -C $GITHUB_WORKSPACE/KernelSU-Next remote set-head origin next-susfs
+          # prints "fatal: ambiguous argument 'origin/HEAD'" and leaves the version
+          # wrong. Pin HEAD so git describe resolves a high version (>=33188).
+          git -C $GITHUB_WORKSPACE/KernelSU-Next checkout dev-susfs
+          git -C $GITHUB_WORKSPACE/KernelSU-Next remote set-head origin dev-susfs
           git -C $GITHUB_WORKSPACE/KernelSU-Next describe --tags --abbrev=0 || true
           git -C $GITHUB_WORKSPACE/KernelSU-Next log --oneline -1
+          # New-arch dev-susfs has no kernel/export_symbol.txt; keep it tolerant.
+          find $GITHUB_WORKSPACE/KernelSU-Next -iname '*symbol*' -o -iname '*symbol*' 2>/dev/null | head
 
       - name: Setup Kernel Source (KMI 8 tag)
         run: |
@@ -101,8 +103,12 @@ jobs:
           KSU_ROOT=$GITHUB_WORKSPACE/KernelSU-Next
           ABI_XML=$COMMON_ROOT/android/abi_gki_aarch64.xml
           SYMBOL_LIST=$COMMON_ROOT/android/abi_gki_aarch64
-          echo "[+] Add KernelSU-Next symbols"
-          cat $KSU_ROOT/kernel/export_symbol.txt | awk '{sub("[ \t]+","");print "  "$0}' >> $SYMBOL_LIST
+          echo "[+] Add KernelSU-Next symbols (tolerant: dev-susfs has no export_symbol.txt)"
+          if [ -f "$KSU_ROOT/kernel/export_symbol.txt" ]; then
+            cat $KSU_ROOT/kernel/export_symbol.txt | awk '{sub("[ \t]+","");print "  "$0}' >> $SYMBOL_LIST
+          else
+            echo "[!] kernel/export_symbol.txt missing in dev-susfs; intree needs no abi symbol-export list."
+          fi
 
       - name: Setup Ccache
         uses: hendrikmuhs/ccache-action@v1
