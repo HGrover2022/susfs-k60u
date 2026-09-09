@@ -361,6 +361,17 @@ jobs:
           apply_in('fs/readdir.c', 'static int compat_filldir(struct dir_context *ctx',
                    '\tdirent = buf->current_dir;', filter_c, '', 'readdir compat_filldir')
 
+          # 50_add_susfs 补丁成功应用在 fill* 顶部带入了 `struct inode *inode;`，
+          # 但隐藏路径分支并不总是使用它，clang 的 -Werror 会将其判为
+          # -Wunused-variable 致命报错。这里用正则统一补上 __maybe_unused 抑制
+          # （filter_c 内已带 __maybe_unused 的声明因行尾多出属性字段而不被匹配）。
+          import re
+          _rd = read('fs/readdir.c')
+          _rd = re.sub(r'(?m)^(\t{1,4})struct inode \*inode;$',
+                       r'\1struct inode *inode __maybe_unused;', _rd)
+          write('fs/readdir.c', _rd)
+          sys.stdout.write('[OK] readdir patch-residue inode -> __maybe_unused\n')
+
           # =====================================================================
           # fs/namespace.c  (6.1 header helpers + tail functions, ported)
           # =====================================================================
