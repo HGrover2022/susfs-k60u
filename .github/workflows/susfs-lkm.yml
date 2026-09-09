@@ -221,7 +221,7 @@ jobs:
               '\tstruct dentry *old;\n'
               '\tstruct inode *dir = base->d_inode;\n'
               '#ifdef CONFIG_KSU_SUSFS_SUS_PATH\n'
-              '\tbool found_sus_path = false;\n'
+              '\tbool found_sus_path __maybe_unused = false;\n'
               '#endif\n',
               'namei __lookup_hash decl')
 
@@ -325,7 +325,7 @@ jobs:
           filter_c = (
               '#ifdef CONFIG_KSU_SUSFS_SUS_PATH\n'
               '\t{\n'
-              '\t\tstruct inode *inode;\n'
+              '\t\tstruct inode *inode __maybe_unused;\n'
               '\n'
               '\t\tif (buf->is_base_dentry_android_data_root_dir) {\n'
               '\t\t\tif (susfs_is_sus_android_data_d_name_found(name)) {\n'
