@@ -140,7 +140,9 @@ jobs:
           else:
               print('[!] KSU_SUSFS_SUS_SU block not found (check Kconfig)')
           EOF
-          grep -n "KSU_SUSFS_SUS_SU" common/drivers/kernelsu/Kconfig
+          # dev-susfs (new arch) has no KSU_SUSFS_SUS_SU config; list the whole KSU_SUSFS
+          # family instead. Do not fail when the symbol is absent.
+          grep -n "KSU_SUSFS" common/drivers/kernelsu/Kconfig || true
 
           # Intree: KernelSU is part of vmlinux; keep default ABI/module handling.
           # No gki_aarch64_modules addition needed for a built-in driver.
